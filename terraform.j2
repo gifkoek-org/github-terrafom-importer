@@ -1,0 +1,20 @@
+{% for repo in repo_list %}
+    module "{{ repo.name }}" {
+      source       = "git@github.com:gifkoek-org/terraform-modules.git//modules/github-repository?ref=v0.1"
+      name         = "{{ repo.name }}"
+      description  = "{{ repo.description}}"
+      writer_teams = [
+        {% for team in repo.writer_teams %}
+          "{{ team }}",
+        {% endfor %}
+      ]
+      owner_teams   = [
+        {% for team in repo.owner_teams %}
+          "{{ team }}",
+        {% endfor %}
+      ]
+      auto_init    = {{ repo.auto_init }}
+      archived      = {{ repo.archived }}
+    }
+
+{% endfor %}
