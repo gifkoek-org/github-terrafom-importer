@@ -1,0 +1,17 @@
+resources:
+{% for repo in repo_list %}
+  - {
+    address: "module.{{ repo.name }}.github_repository.github_repo",
+    resource_id: "{{ repo.name }}"
+  }
+  - {
+    address: "module.{{ repo.name }}.github_branch_protection.master",
+    resource_id: "{{ repo.name }}:master"
+  }
+  {% for team in repo.writer_teams %}
+  - {
+    address: "module.{{ repo.name }}.github_team_repository.writer_team[\"{{ team }}\"]",
+    resource_id:  "{{ team }}:{{ repo.name }}"
+  }
+  {% endfor %}
+{% endfor %}
