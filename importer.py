@@ -4,9 +4,7 @@ import os
 import logging
 import json
 
-GITHUB_ORG = "gifkoek-org"
-# GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-GITHUB_TOKEN = ""
+GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 
 # set logger details
 FORMAT = "%(levelname)s %(message)s"
@@ -16,10 +14,62 @@ logger.setLevel(logging.INFO)
 
 
 def get_constellation_name(team):
-    if team in ["foobar"]:
-        return "scorpio"
+    if team.lower() in ["teamnameyourelookingfor"]:
+        return "matchingconstellationname"
     else:
         return "orphanedConstellation"
+
+
+def get_writer_teams(repo):
+    logger.info(f"getting writer teams for repo '{repo.name}'")
+    writer_teams = []
+
+    try:
+        for team in repo.get_teams():
+            logger.info(f"on repo '{repo.name}' team '{team}' has permission '{team.permission}'")
+            if team.permission == "push" or team.permission == "admin":
+                writer_teams.append(team.name)
+        return writer_teams
+    except Exception as e:
+        logger.warning(f"issue with teams for repo {repo.name}, Exception is {e}")
+        writer_teams.append("noWriterTeamDefined")
+        return writer_teams
+
+
+def get_owner_teams(repo):
+    logger.info(f"getting owner teams for repo '{repo.name}'")
+    owner_teams = []
+
+    # i'm sure these try/except, if/else's below can be done in a better way...
+    try:
+        if repo.default_branch:             # is there a default branch?
+            branch = repo.get_branch(repo.default_branch)
+            if branch.protected:            # is the branch protected?
+                logger.info(f"branch '{branch.name}' is protected")
+                try:
+                    for team in branch.get_team_push_restrictions():
+                        owner_teams.append(team.name)
+                        constellation = get_constellation_name(team.name)
+                        return owner_teams, constellation
+                    else:
+                        owner_teams.append("orphanedRepo")
+                        constellation = "orphanedConstellation"
+                        return owner_teams, constellation
+                except Exception as e:
+                    logger.warning(f"branch {branch} has no push restrictions.\n Exception is: {e}")
+                    owner_teams.append("orphanedRepo")
+                    constellation = "orphanedConstellation"
+                    return owner_teams, constellation
+            else:
+                logger.info(f"branch has no protection")
+                owner_teams.append("orphanedRepo")
+                constellation = "orphanedConstellation"
+                return owner_teams, constellation
+    except:
+        logger.error(f"XXX '{repo.name}' has NO default branch PANIC!")
+        owner_teams.append("orphanedRepo")
+        constellation = "orphanedConstellation"
+        return owner_teams, constellation
 
 
 def get_all_repos(gclient):
@@ -27,44 +77,19 @@ def get_all_repos(gclient):
     for repo in gclient.get_user().get_repos():
         this_repo = {}
         logger.info(f"{repo.name}, "
-                    f"{repo.description}"
+                    f"{repo.description}, "
                     f"{repo.default_branch}, "
                     f"{repo.archived}, "
-                    f"XXXTOPICS{repo.get_topics()}, "
-                    f"XXXTEAMS{repo.get_teams()}"
-                    # f"{repo.permissions}, "
-                    # f"{repo.owner}, "
+                    f"{repo.owner}, "
                     )
 
         # get teams and their push/pull (write/read) permissions on this repo
-        writer_teams = []
-        # writer_teams = []
-        for team in repo.get_teams():
-            logger.info(f"teams are {team} with permission {team.permission}")
-            if team.permission == "push" or team.permission == "admin":
-                writer_teams.append(team.id)
+        writer_teams = get_writer_teams(repo)
 
         # get master branch protections, if they exist
-        owner_teams = []
-        constellation = ""
-        if repo.default_branch == "master":
-            branch = repo.get_branch("master")
-            if branch.protected:
-                logger.info(f"branch has protection")
-                try:
-                    for team in branch.get_team_push_restrictions():
-                        owner_teams.append(team.id)
-                        constellation = get_constellation_name(team.name)
-                except Exception as e:
-                    logger.info(f"branch {branch} has no push restrictions.\n Exception is: {e}")
-                    owner_teams.append("orphanedRepo")
-            else:
-                logger.info(f"branch has no protection")
-                owner_teams.append("orphanedRepo")
-        else:
-            logger.info(f"XXX {repo.name} has a default branch other than 'master'!")
-            owner_teams.append("orphanedRepo")
+        owner_teams, constellation = get_owner_teams(repo)
 
+        # build the repo json object
         this_repo["name"] = repo.name
         this_repo["description"] = repo.description
         this_repo["auto_init"] = False
@@ -74,314 +99,65 @@ def get_all_repos(gclient):
         this_repo["constellation"] = constellation
 
         logger.info(f"object for this repo: {json.dumps(this_repo, indent=4)}")
-        #append to the global list
-        repo_list.append(this_repo)
+        repo_list.append(this_repo)     #append to the global list
 
-    logger.info(f"repo dict:\n {json.dumps(repo_list, indent=4)}")
     return repo_list
 
 
-def build_templates(repo_list):
-    file_loader = FileSystemLoader(".")
+def split_repos_by_team(repo_list, prefix):
+    # return only those repos that start with the prefix
+    prefixed_repos = []
+    logger.info(f"finding all repos starting with '{prefix}'")
+    for repo in repo_list:
+        if repo["name"].startswith(prefix):
+            prefixed_repos.append(repo)
+            logger.info(f"added repo \'{repo['name']}\' to the prefixed list")
+
+    logger.info(f"filtered {len(prefixed_repos)} repos from total of {len(repo_list)}")
+
+    return prefixed_repos
+
+
+def build_templates(repo_list, prefix):
+    file_loader = FileSystemLoader(".")     # template files are in this directory
     env = Environment(loader=file_loader)
-    env.trim_blocks = True
+    env.trim_blocks = True                  # strip white space
     env.lstrip_blocks = True
     env.rstrip_blocks = True
 
     # build the tf file
     template = env.get_template("terraform.j2")
-    output = template.render(repo_list=repo_list)
-    logger.info(output)
+    terraform_output = template.render(repo_list=repo_list)
+    logger.info(terraform_output)
 
     # build the resource import file
     template = env.get_template("resource.j2")
-    output = template.render(repo_list=repo_list)
-    logger.info(output)
+    resource_import = template.render(repo_list=repo_list)
+    logger.info(resource_import)
+
+    # write to a file
+    with open(f"{prefix}repos.tf", "w") as tffile:
+        tffile.write(terraform_output)
+    with open(f"{prefix}resource.yaml", "w") as resourcefile:
+        resourcefile.write(resource_import)
 
 
 def main():
     gclient = Github(GITHUB_TOKEN)
     # repo_list = get_all_repos(gclient)
-    repo_list = [
-        {
-            "name": "terraform-provider-aws",
-            "description": "Terraform AWS provider",
-            "auto_init": False,
-            "archived": False,
-            "writer_teams": [],
-            "owner_teams": [
-                "orphanedRepo"
-            ],
-            "constellation": ""
-        },
-        {
-            "name": "aacorne-testing2",
-            "description": "Testing repo creation with TF",
-            "auto_init": False,
-            "archived": False,
-            "writer_teams": [
-                3459189,
-                3937005
-            ],
-            "owner_teams": [
-                3937005
-            ],
-            "constellation": "orphanedConstellation"
-        },
-        {
-            "name": "aws-lambda-deployments",
-            "description": "testing aws lambda codepipelines",
-            "auto_init": False,
-            "archived": False,
-            "writer_teams": [
-                3459189
-            ],
-            "owner_teams": [
-                "orphanedRepo"
-            ],
-            "constellation": ""
-        }
-    ]
+    # logger.info(json.dumps(repo_list, indent=4))
 
-    build_templates(repo_list)
+    # so we don't have to re-get all the repos, because it takes long
+    # with open("repolist_file", "w") as repofile:
+    #     json.dump(repo_list, repofile)
 
+    with open("repolist_file", "r") as repofile:
+        repo_list = json.load(repofile)
 
+    # logger.info(json.dumps(repo_list, indent=4))
+    # render the templates per listed repo prefix
+    repo_prefix_list = ["changetorequiredstring"]
+    for prefix in repo_prefix_list:
+        build_templates(split_repos_by_team(repo_list, prefix), prefix)
 
 main()
-
-# all_repos =  [
-#     {
-#         "name": "terraform-provider-aws",
-#         "description": "Terraform AWS provider",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "aacorne-testing2",
-#         "description": "Testing repo creation with TF",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189,
-#             3937005
-#         ],
-#         "owner_teams": [
-#             3937005
-#         ],
-#         "constellation": "orphanedConstellation"
-#     },
-#     {
-#         "name": "aws-lambda-deployments",
-#         "description": "testing aws lambda codepipelines",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "aws-lambda-deployments-safemode",
-#         "description": "Lambda deployments in safe mode",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "aws-testing",
-#         "description": "aws-testing",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189,
-#             3937005
-#         ],
-#         "owner_teams": [
-#             3937005
-#         ],
-#         "constellation": "orphanedConstellation"
-#     },
-#     {
-#         "name": "cfn-nested-stacks-pipeline",
-#         "description": "Pipeline to automate deployment of nested CFN stacks",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "cfn-nested-stacks-simpleexample",
-#         "description": "Simple example to test nested CFN stacks",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "codepipeline-cfntemplate",
-#         "description": "CloudFormation template to build a CodePipeline",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "codepipeline-simpleexample",
-#         "description": "Simple test for basic CFN template with CodePipeline",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "ecs-refarch-cloudformation",
-#         "description": "A reference architecture for deploying containerized microservices with Amazon ECS and AWS CloudFormation (YAML)",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "esp8266",
-#         "description": "personal esp8266 projects",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "github-iac",
-#         "description": "Terraform IaC for Github",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "github-terrafom-importer",
-#         "description": "python script to get current github configuration and create terraform code for it",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             3459189
-#         ],
-#         "constellation": "scorpio"
-#     },
-#     {
-#         "name": "lambda-versioning-the-hard-way",
-#         "description": "Pipelines and CloudFormation template for safe-mode Lambda deploys without using SAM",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189,
-#             3937005
-#         ],
-#         "owner_teams": [
-#             3937005
-#         ],
-#         "constellation": "orphanedConstellation"
-#     },
-#     {
-#         "name": "pipeline-variable-replacer",
-#         "description": "CodePipeline for a Lambda function to do Jinja-based variable replacement in CloudFormation YAML files",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "private-APIgw-with-custom-dns",
-#         "description": null,
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "terraform-modules",
-#         "description": null,
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     },
-#     {
-#         "name": "variable-replacer",
-#         "description": "Lambda function to do Jinja-based variable replacement in CloudFormation YAML files",
-#         "auto_init": false,
-#         "archived": false,
-#         "writer_teams": [
-#             3459189
-#         ],
-#         "owner_teams": [
-#             "orphanedRepo"
-#         ],
-#         "constellation": ""
-#     }
-# ]
-
